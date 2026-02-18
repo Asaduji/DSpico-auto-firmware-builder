@@ -1,0 +1,146 @@
+name: Firmware build
+
+on:
+    push:
+        branches: ["main"]
+    pull_request:
+        branches: ["main"]
+    repository_dispatch:
+        types: [remote_changed]
+    workflow_dispatch:
+
+env:
+    BUILD_TYPE: Release
+
+jobs:
+    build:
+        permissions:
+            contents: write
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y \
+                    build-essential \
+                    cmake \
+                    gcc-arm-none-eabi \
+                    unzip
+
+            - name: Install Wonderful Toolchain
+              run: |
+                  curl -L -O "https://wonderful.asie.pl/bootstrap/wf-bootstrap-x86_64.tar.gz"
+                  sudo mkdir /opt/wonderful
+                  sudo chown -R "$USER" /opt/wonderful
+                  tar -xzvf wf-bootstrap-x86_64.tar.gz -C /opt/wonderful
+                  yes | /opt/wonderful/bin/wf-pacman -Syu wf-tools
+                  source /opt/wonderful/bin/wf-env
+
+            - name: Install BlocksDS
+              run: |
+                  export PATH=/opt/wonderful/bin:$PATH
+                  yes | wf-config repo enable blocksds
+                  yes | wf-pacman -Syu
+                  yes | wf-pacman -S blocksds-toolchain
+                  ln -s /opt/wonderful/thirdparty/blocksds /opt/blocksds
+
+            # No need to compile DLDI, it's available as release
+            - name: Download DLDI driver
+              run: curl -L -O "https://github.com/LNH-team/dspico-dldi/releases/latest/download/DSpico.dldi"
+
+            - uses: actions/checkout@v4
+              with:
+                  repository: LNH-team/dspico-wrfuxxed
+                  submodules: recursive
+                  fetch-depth: 0
+                  path: dspico-wrfuxxed
+
+            - name: Build WRFUxxed
+              run: |
+                  cd dspico-wrfuxxed
+                  make
+
+            - name: DLDI Patch WRFUxxed
+              run: /opt/blocksds/core/tools/dlditool/dlditool DSpico.dldi ./dspico-wrfuxxed/uartBufv060.bin
+
+            - uses: actions/checkout@v4
+              with:
+                  repository: LNH-team/dspico-bootloader
+                  submodules: recursive
+                  fetch-depth: 0
+                  path: dspico-bootloader
+
+            - name: Build WRFUxxed
+              run: |
+                  cd dspico-bootloader
+                  make
+
+            - name: DLDI Patch bootloader
+              run: /opt/blocksds/core/tools/dlditool/dlditool DSpico.dldi ./dspico-bootloader/BOOTLOADER.nds
+
+            - uses: actions/checkout@v4
+              with:
+                  repository: Gericom/DSRomEncryptor
+                  submodules: recursive
+                  fetch-depth: 0
+                  path: rom_encryptor
+
+            - name: Setup .NET
+              uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: 9.x
+
+            - name: Encrypt bootloader
+              run: |
+                  cd ./rom_encryptor/DSRomEncryptor
+
+                  # Build rom encryptor
+                  dotnet restore
+                  dotnet build --no-restore
+                  cd ./bin/Debug/net9.0
+
+                  # Fetch keys
+                  curl -L -o ntrBlowfish.bin "https://github.com/DS-Homebrew/nds-bootstrap/raw/342b9408f761c1f3f03aac154c9e0aab1707e10f/retail/nitrofiles/encr_data.bin"
+                  curl -L -o twlBlowfish.bin "https://github.com/DS-Homebrew/nds-bootstrap/raw/342b9408f761c1f3f03aac154c9e0aab1707e10f/retail/nitrofiles/dsi_encr_data.bin"
+
+                  # Finally, encrypt the bootloader
+                  ./DSRomEncryptor ../../../../../dspico-bootloader/BOOTLOADER.nds ../../../../../dspico-bootloader/BOOTLOADER_enc.nds
+
+            - uses: actions/checkout@v4
+              with:
+                  repository: LNH-team/dspico-firmware
+                  submodules: recursive
+                  fetch-depth: 0
+                  path: firmware
+
+            - name: Enable WRFUxxed
+              run: sed -i 's/^\([[:space:]]*\)#\(DSPICO_ENABLE_WRFUXXED.*\)/\1\2/' ./firmware/CMakeLists.txt
+
+            - name: Copy roms
+              run: |
+                  cp ./dspico-bootloader/BOOTLOADER_enc.nds ./firmware/roms/default.nds
+                  cp ./dummy.bin ./firmware/roms/dsimode.nds
+                  cp ./dspico-wrfuxxed/uartBufv060.bin ./firmware/data/uartBufv060.bin
+
+            - name: Build firmware
+              run: |
+                  cd ./firmware
+                  ./compile.sh
+
+            - name: Prepare deploy
+              run: |
+                  mkdir -p deploy
+                  cp ./firmware/build/DSpico.uf2 deploy/
+
+            - name: Deploy to GitHub Pages
+              uses: peaceiris/actions-gh-pages@v4
+              with:
+                  github_token: ${{ secrets.GITHUB_TOKEN }}
+                  publish_branch: gh-pages
+                  publish_dir: deploy
+                  force_orphan: true
+                  user_name: "github-actions"
+                  user_email: "github-actions@github.com"

@@ -1,0 +1,83 @@
+name: Cron update
+
+on:
+    schedule:
+        - cron: "0 3 * * *"
+    workflow_dispatch:
+
+permissions:
+    contents: write
+
+jobs:
+    detect:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - run: |
+                  touch last_shas.txt
+                  git add last_shas.txt
+
+            - name: Check firmware SHA
+              id: firmware
+              run: |
+                  REMOTE_SHA=$(curl -s https://api.github.com/repos/LNH-team/dspico-firmware/commits/develop | jq -r '.sha')
+                  echo "Remote SHA: $REMOTE_SHA"
+
+                  LAST_SHA=$(grep '^FIRMWARE=' last_shas.txt | cut -d'=' -f2 || echo "")
+                  echo "Last SHA: $LAST_SHA"
+
+                  if [ "$REMOTE_SHA" != "$LAST_SHA" ]; then
+                    echo "changed=true" >> $GITHUB_OUTPUT
+                    echo "FIRMWARE=$REMOTE_SHA" > temp_shas.txt
+                  else
+                    echo "changed=false" >> $GITHUB_OUTPUT
+                    echo "FIRMWARE=$LAST_SHA" > temp_shas.txt
+                  fi
+
+            - name: Check bootloader SHA
+              id: bootloader
+              run: |
+                  REMOTE_SHA=$(curl -s https://api.github.com/repos/LNH-team/dspico-bootloader/commits/develop | jq -r '.sha')
+                  LAST_SHA=$(grep '^BOOTLOADER=' last_shas.txt | cut -d'=' -f2 || echo "")
+
+                  if [ "$REMOTE_SHA" != "$LAST_SHA" ]; then
+                    echo "changed=true" >> $GITHUB_OUTPUT
+                    echo "BOOTLOADER=$REMOTE_SHA" >> temp_shas.txt
+                  else
+                    echo "changed=false" >> $GITHUB_OUTPUT
+                    echo "BOOTLOADER=$LAST_SHA" >> temp_shas.txt
+                  fi
+
+            - name: Check wrfuxxed SHA
+              id: wrfuxxed
+              run: |
+                  REMOTE_SHA=$(curl -s https://api.github.com/repos/LNH-team/dspico-wrfuxxed/commits/develop | jq -r '.sha')
+                  LAST_SHA=$(grep '^WRFUXXED=' last_shas.txt | cut -d'=' -f2 || echo "")
+
+                  if [ "$REMOTE_SHA" != "$LAST_SHA" ]; then
+                    echo "changed=true" >> $GITHUB_OUTPUT
+                    echo "WRFUXXED=$REMOTE_SHA" >> temp_shas.txt
+                  else
+                    echo "changed=false" >> $GITHUB_OUTPUT
+                    echo "WRFUXXED=$LAST_SHA" >> temp_shas.txt
+                  fi
+
+            - name: Commit updated SHA
+              if: steps.firmware.outputs.changed == 'true' || steps.bootloader.outputs.changed == 'true' || steps.wrfuxxed.outputs.changed == 'true'
+              run: |
+                  mv temp_shas.txt last_shas.txt
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git add last_shas.txt
+                  git commit -m "Update remote SHAs"
+                  git push
+
+            - name: Trigger on change
+              if: steps.firmware.outputs.changed == 'true' || steps.bootloader.outputs.changed == 'true' || steps.wrfuxxed.outputs.changed == 'true'
+              run: |
+                  curl -X POST \
+                    -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                    -H "Accept: application/vnd.github+json" \
+                    https://api.github.com/repos/${{ github.repository }}/dispatches \
+                    -d '{"event_type":"remote_changed"}'
