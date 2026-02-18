@@ -130,10 +130,24 @@ jobs:
                   cd ./firmware
                   ./compile.sh
 
+            - name: Save build info
+              run: |
+                  > last_shas.txt
+                  cd ./firmware
+                  echo "FIRMWARE=$(git rev-parse HEAD)" >> ../last_shas.txt
+                  cd ../dspico-bootloader
+                  echo "BOOTLOADER=$(git rev-parse HEAD)" >> ../last_shas.txt
+                  cd ../dspico-wrfuxxed
+                  echo "WRFUXXED=$(git rev-parse HEAD)" >> ../last_shas.txt
+                  cd ..
+                  date >> build_date.txt
+
             - name: Prepare deploy
               run: |
                   mkdir -p deploy
                   cp ./firmware/build/DSpico.uf2 deploy/
+                  cp ./last_shas.txt deploy/
+                  cp ./build_date.txt deploy/
 
             - name: Deploy to GitHub Pages
               uses: peaceiris/actions-gh-pages@v4
