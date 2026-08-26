@@ -111,7 +111,7 @@ jobs:
 
             - uses: actions/checkout@v4
               with:
-                  repository: profi200/dspico-firmware
+                  repository: edo9300/dspico-firmware
                   submodules: recursive
                   fetch-depth: 0
                   path: firmware
